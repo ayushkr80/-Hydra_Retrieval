@@ -124,7 +124,7 @@ docker compose -f docker-compose.neo4j.yml up -d
 ```
 This maps:
 - Bolt connection to port `7687`
-- Neo4j Browser Console to `http://localhost:7474` (Credentials: `neo4j` / `password` for demo)
+- Neo4j Browser Console to `http://localhost:7474` (Credentials: `neo4j` / your configured `NEO4J_PASSWORD`)
 
 ### 2. Seed realistic Demo Data
 Populates the graph database with Actors, Scopes, Facts, temporal relations, and derived provenance:
