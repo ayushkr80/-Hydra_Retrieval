@@ -149,3 +149,36 @@ Start the Textual console dashboard to visually run traversal queries and audit 
 ```bash
 python main.py
 ```
+
+---
+
+## 2-3 Minute Hackathon Demo Flow
+
+Use this step-by-step walkthrough to present the core security features to the judges in under 3 minutes:
+
+### 1. **Explain the Problem (15 seconds)**
+Show the dashboard running. Explain: *"Traditional systems retrieve memories first and filter permissions later. If search fetches a restricted memory, it risks entering the LLM context window. Hydra makes authorization a native property of graph reachability."*
+
+### 2. **Basic RBAC & Isolation (30 seconds)**
+- Select **Support Agent** on the left.
+- Search for topic `"Acme"`.
+- Click on `✓ Acme raised 3 support tickets this week`. Show the path: `Support → Team-Support → Fact` is active.
+- Click on `🔒 Acme ARR is $240k`. Show the block: `Scope (Team-Finance) 🔒 X (NO VALID PATH)`. The fact exists in the DB, but the graph search cannot cross the scope.
+
+### 3. **Temporal Access & Delegation (45 seconds)**
+- Change topic time to `2026-08-13T00:00:00Z` (Aug 13).
+- Select **Sales Agent**.
+- Run query. Click on `✓ Acme ARR is $240k`. Point out: *"On Aug 13, the Sales Agent had active temporary delegation to the Finance scope. The graph path is fully green."*
+- Now change topic time back to `2026-08-19T00:00:00Z` (Aug 19).
+- Run query. Click on `🔒 Acme ARR is $240k`. Point out: *"On Aug 19, the delegation expired. The MEMBER_OF link immediately breaks, returning BLOCKED without any code changes."*
+
+### 4. **Transitive Provenance Isolation (45 seconds)**
+- Select **Finance Agent** (on Aug 19) and query `"Acme"`.
+- Click on `🔒 Acme is an Enterprise customer at churn risk...` (Derived Fact).
+- Show the Provenance tree on the right:
+  - `✓ Churn Risk` (Finance source) is accessible.
+  - `✗ Upsell Deal` (Sales source) is blocked.
+- Explain: *"This is a derived AI memory. Even though the Finance Agent has direct access to the Churn Risk source, they lack access to the Sales upsell deal. Because permissions are transitive across graph derivations, the derived fact remains securely BLOCKED."*
+- Select **Sales Agent** (on Aug 13) and query `"Acme"`.
+- Click on `✓ Acme is an Enterprise customer at churn risk...`.
+- Explain: *"Only when the agent possesses access to both Finance and Sales scopes (as Sales does during their temporal delegation window on Aug 13) does the entire provenance tree resolve to ALLOWED."*
