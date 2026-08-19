@@ -1,17 +1,42 @@
 # Hydra RBAC Memory — Scoped Shared Memory Layer
 
-Hydra RBAC Memory secures shared AI memory by treating authorization as a property of graph reachability rather than a post-retrieval filter.
+## Problem
 
-## Key Features
+Multi-agent systems increasingly share organizational memory. Traditional retrieval systems fetch information first and apply authorization filters afterward, creating a critical risk that restricted information accidentally enters the agent's context window. 
 
-1. **Graph Reachability Authorization**: Access to a memory node (Fact) is determined by the existence of an active path:
-   `Actor -[:MEMBER_OF]-> Scope <-[:VISIBLE_TO]- Fact`
-2. **Temporal Permissions**: Membership of actors in scopes, as well as the visibility of facts in scopes, are time-bound (`since` and `until` properties). The system evaluates authorization dynamically as of a specific historical or current timestamp.
-3. **Transitive Provenance Security**: Derived facts (e.g. AI-inferred memories) inherit visibility restrictions from all their source facts. If Fact C is derived from Fact A (Finance) and Fact B (Sales), an agent must have permission to access both Finance and Sales scopes to view Fact C.
+Hydra RBAC Memory solves this security vulnerability by making **authorization a property of graph reachability** rather than a post-retrieval filter.
 
 ---
 
-## Core Architecture
+## Our Solution
+
+Authorization is evaluated directly during graph traversal by checking for an active, time-bound path:
+
+```
+Actor
+  │
+  │ MEMBER_OF (since, until)
+  ▼
+Scope
+  ▲
+  │ VISIBLE_TO (since, until)
+  │
+Fact
+```
+
+If there is no valid path (due to missing membership, expired access, or scope mismatch), the fact is completely inaccessible during traversal.
+
+---
+
+## Why HydraDB?
+
+- **Native Authorization Traversal**: Authorization is represented directly as graph relationships. Security is not an afterthought; it is baked into graph reachability queries.
+- **Temporal Access Properties**: Historical and temporary access (e.g. cross-functional delegation) are represented through time-bound edge properties (`since`, `until`) and validated at checkout timestamps.
+- **Transitive Provenance Security**: Provenance relations (`DERIVED_FROM`) create transitive constraints. When AI agents derive new facts from multiple sources (e.g. Finance + Sales), visibility is dynamically computed as the intersection of all source permissions.
+
+---
+
+## Core Schema & Traversal
 
 ```
                   ┌──────────────┐
@@ -40,62 +65,58 @@ Hydra RBAC Memory secures shared AI memory by treating authorization as a proper
 
 ---
 
-## Folder Structure
+## Installation & Setup
 
-```
-hydra-rbac-memory/
-├── main.py          # Entrypoint to run the Textual TUI dashboard
-├── graph.py         # Connection wrapper & secure Cypher queries for Neo4j
-├── seed.py          # Database initializer with realistic demo data
-├── agents.py        # CLI test scripts to verify permission checks
-├── requirements.txt # Python dependency declarations
-└── README.md        # Project documentation
-```
-
----
-
-## Getting Started
-
-### 1. Installation
-
-Create a virtual environment, activate it, and install dependencies:
-
+### 1. Install Dependencies
+Create a virtual environment, activate it, and install:
 ```bash
 pip install -r requirements.txt
 ```
 
-Ensure you have a running Neo4j instance. The default configuration connects to:
-- **URI**: `bolt://localhost:7687`
-- **Username**: `neo4j`
-- **Password**: `password`
+### 2. Configure Credentials (Strict Environment Variables)
+This project enforces safe credentials handling. It does not use hardcoded passwords. Create a `.env` file in the root of the project:
 
-You can override these using environment variables:
-```bash
-$env:NEO4J_URI="bolt://localhost:7687"
-$env:NEO4J_USER="neo4j"
-$env:NEO4J_PASSWORD="yourpassword"
+```env
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=YOUR_ACTUAL_NEO4J_PASSWORD
 ```
 
-### 2. Seeding the Demo Data
+*(The application will automatically load variables from `.env` or `../.env` at startup).*
 
-Run the seeding script to populate the graph with actors, scopes, facts, temporal links, and derivation provenance:
+---
 
+## Running the Application
+
+### 1. Launch Neo4j (Optional Helper)
+If you have Docker running locally, you can start Neo4j instantly using our helper compose file:
+```bash
+docker compose -f docker-compose.neo4j.yml up -d
+```
+This maps:
+- Bolt connection to port `7687`
+- Neo4j Browser Console to `http://localhost:7474` (Credentials: `neo4j` / `password` for demo)
+
+### 2. Seed realistic Demo Data
+Populates the graph database with Actors, Scopes, Facts, temporal relations, and derived provenance:
 ```bash
 python seed.py
 ```
 
-### 3. Running Verification Tests
-
-Run the command-line tests to verify access patterns (e.g., checking temporal access active/expired and derived fact blocking):
-
+### 3. Run Scenario Verification Tests
+Execute the explicit verification test suite covering Support isolation, Finance limits, historical Sales delegation, revoked Sales access, and derived fact blocking:
 ```bash
 python agents.py
 ```
 
-### 4. Running the Dashboard
+### 4. Run Automated Test Suite
+Run the suite of automated unittest scripts:
+```bash
+python -m unittest discover tests/
+```
 
-Launch the interactive Textual TUI dashboard to query facts and visualize authorization paths:
-
+### 5. Launch the Dashboard (TUI)
+Start the Textual console dashboard to visually run traversal queries and audit paths:
 ```bash
 python main.py
 ```

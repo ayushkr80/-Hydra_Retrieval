@@ -9,17 +9,41 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+def load_env():
+    """
+    Helper to manually load .env file contents from the current directory
+    or the parent directory into os.environ.
+    """
+    for path in [".env", "../.env"]:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            key, val = line.split("=", 1)
+                            val = val.strip().strip("'\"")
+                            os.environ[key.strip()] = val
+            except Exception as e:
+                print(f"Warning: Failed to read .env at {path}: {e}")
+
 class HydraGraph:
     def __init__(self, uri=None, user=None, password=None):
+        load_env()
         self.uri = uri or os.environ.get("NEO4J_URI", "bolt://localhost:7687")
         self.user = user or os.environ.get("NEO4J_USER", "neo4j")
-        self.password = password or os.environ.get("NEO4J_PASSWORD", "password")
+        self.password = password or os.environ.get("NEO4J_PASSWORD")
+        
+        if not self.password:
+            raise ValueError(
+                "Configuration Error: NEO4J_PASSWORD environment variable is not set.\n"
+                "Please declare it in a local .env file or export it in your shell environment."
+            )
         
         try:
             self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
             # Verify connectivity
             self.driver.verify_connectivity()
-            print("✓ Connected to HydraDB (Neo4j)")
         except Exception as e:
             print(f"✗ Failed to connect to Neo4j database at {self.uri}")
             print(f"Error: {e}")
@@ -114,7 +138,7 @@ class HydraGraph:
             session.run(query, derived_fact_id=derived_fact_id, source_fact_id=source_fact_id)
 
     # ---------------------------------------------------------
-    # SECURE RETRIEVAL & TRAVERSAL
+    # SECURE RETRIEVAL & TRAVERSAL (Priority 1 & 2)
     # ---------------------------------------------------------
 
     def get_facts_for_actor(self, actor_id: str, topic: str, as_of: str):

@@ -1,9 +1,26 @@
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Header, Footer, Static, Input, Button, Label, RadioSet, RadioButton, ListView, ListItem
-from graph import HydraGraph
+from graph import HydraGraph, load_env
 import os
 import traceback
+import sys
+
+# Force stdout to use UTF-8 on Windows
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+class HeaderListItem(ListItem):
+    def __init__(self, text: str):
+        super().__init__()
+        self.text = text
+        self.disabled = True
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"─── {self.text} ───", classes="header-label")
 
 class FactListItem(ListItem):
     def __init__(self, fact_id: str, content: str, is_allowed: bool, scope_name: str):
@@ -15,14 +32,14 @@ class FactListItem(ListItem):
 
     def compose(self) -> ComposeResult:
         icon = "✓" if self.is_allowed else "🔒"
-        style_class = "allowed" if self.is_allowed else "blocked"
+        style_class = "allowed-fact" if self.is_allowed else "blocked-fact"
         yield Label(f"{icon} {self.content} ({self.scope_name})", classes=style_class)
 
 class HydraRbacTui(App):
     CSS = """
     Screen {
-        background: #1e1e1e;
-        color: #ffffff;
+        background: #121212;
+        color: #e0e0e0;
     }
     
     #app-title {
@@ -34,24 +51,47 @@ class HydraRbacTui(App):
         height: 3;
     }
     
-    .pane {
-        border: tall #005f73;
+    #main-layout {
         height: 1fr;
-        padding: 1;
-        margin: 1;
-        background: #2a2a2a;
     }
     
-    #agents-pane {
+    .column {
+        height: 1fr;
+    }
+    
+    #left-col {
         width: 25%;
     }
     
-    #query-pane {
+    #middle-col {
         width: 45%;
     }
     
-    #trace-pane {
+    #right-col {
         width: 30%;
+    }
+    
+    .pane {
+        border: tall #005f73;
+        padding: 1;
+        margin: 1;
+        background: #1e1e1e;
+    }
+    
+    #agents-pane {
+        height: 1fr;
+    }
+    
+    #query-pane {
+        height: auto;
+    }
+    
+    #results-pane {
+        height: 1fr;
+    }
+    
+    #trace-pane {
+        height: 1fr;
     }
     
     .panel-title {
@@ -63,11 +103,12 @@ class HydraRbacTui(App):
     .label-field {
         margin-top: 1;
         text-style: bold;
+        color: #ca5555;
     }
     
     #run-btn {
-        margin-top: 2;
-        margin-bottom: 2;
+        margin-top: 1;
+        margin-bottom: 1;
         width: 100%;
         background: #0a9396;
         color: white;
@@ -79,24 +120,45 @@ class HydraRbacTui(App):
     }
     
     #results-list {
-        background: #1e1e1e;
+        background: #121212;
         border: solid #005f73;
         height: 1fr;
     }
     
-    .allowed {
-        color: #52b788;
+    .header-label {
+        color: #ee9b00;
+        text-style: bold;
+        text-align: center;
+        background: #2b2d42;
+        width: 100%;
+        padding: 1;
     }
     
-    .blocked {
+    .allowed-fact {
+        color: #52b788;
+        text-style: bold;
+    }
+    
+    .blocked-fact {
         color: #e63946;
+        text-style: bold;
     }
     
     #trace-content {
-        background: #1e1e1e;
+        background: #121212;
         padding: 1;
         border: solid #005f73;
         height: 1fr;
+    }
+    
+    #provenance-footer {
+        height: 3;
+        background: #005f73;
+        color: #ffffff;
+        text-align: center;
+        padding: 1;
+        text-style: bold;
+        margin: 1;
     }
     
     #db-status {
@@ -107,64 +169,77 @@ class HydraRbacTui(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("HYDRA RBAC MEMORY - GRAPH REACHABILITY TRAVERSAL", id="app-title")
+        yield Static("HYDRA RBAC MEMORY - DYNAMIC GRAPH RETRIEVAL", id="app-title")
         
-        with Horizontal():
-            # 1. Agents Pane
-            with Vertical(id="agents-pane", classes="pane"):
-                yield Label("AGENTS", classes="panel-title")
-                yield Label("Select active agent actor:")
-                with RadioSet(id="agent-selector"):
-                    yield RadioButton("Support Agent", value=True, id="rb-support")
-                    yield RadioButton("Sales Agent", id="rb-sales")
-                    yield RadioButton("Finance Agent", id="rb-finance")
-                yield Label("Database Status:", classes="label-field")
-                yield Static("Connecting...", id="db-status")
+        with Horizontal(id="main-layout"):
+            # 1. Left Column (Agents)
+            with Vertical(id="left-col", classes="column"):
+                with Vertical(id="agents-pane", classes="pane"):
+                    yield Label("AGENT SELECTOR", classes="panel-title")
+                    yield Label("Select agent context:")
+                    with RadioSet(id="agent-selector"):
+                        yield RadioButton("Support Agent", value=True, id="rb-support")
+                        yield RadioButton("Sales Agent", id="rb-sales")
+                        yield RadioButton("Finance Agent", id="rb-finance")
+                    yield Label("Database Connection Status:", classes="label-field")
+                    yield Static("Checking...", id="db-status")
 
-            # 2. Query & Results Pane
-            with Vertical(id="query-pane", classes="pane"):
-                yield Label("QUERY & AUTHORIZATION TRAVERSAL", classes="panel-title")
+            # 2. Middle Column (Query & Results)
+            with Vertical(id="middle-col", classes="column"):
+                with Vertical(id="query-pane", classes="pane"):
+                    yield Label("QUERY CONFIGURATION", classes="panel-title")
+                    yield Label("Topic / Keyword:")
+                    yield Input(value="Acme", placeholder="e.g. Acme, BetaCo", id="topic-input")
+                    yield Label("Temporal Checkpoint (UTC):")
+                    yield Input(value="2026-08-19T00:00:00Z", placeholder="YYYY-MM-DDTHH:MM:SSZ", id="time-input")
+                    yield Button("Run Security Traversal", id="run-btn")
                 
-                yield Label("Topic / Search Keyword:", classes="label-field")
-                yield Input(value="Acme", placeholder="e.g. Acme, BetaCo", id="topic-input")
-                
-                yield Label("As of Date/Time (UTC ISO 8601):", classes="label-field")
-                yield Input(value="2026-08-19T00:00:00Z", placeholder="YYYY-MM-DDTHH:MM:SSZ", id="time-input")
-                
-                yield Button("Run Graph Traversal Query", id="run-btn")
-                
-                yield Label("Traversal Results:", classes="label-field")
-                yield ListView(id="results-list")
+                with Vertical(id="results-pane", classes="pane"):
+                    yield Label("SHARED MEMORY RESULTS", classes="panel-title")
+                    yield ListView(id="results-list")
 
-            # 3. Trace Pane
-            with Vertical(id="trace-pane", classes="pane"):
-                yield Label("GRAPH AUTHORIZATION TRACE", classes="panel-title")
-                yield Static("Select a fact from the results to view authorization trace path.", id="trace-content")
-                
+            # 3. Right Column (Graph Trace)
+            with Vertical(id="right-col", classes="column"):
+                with Vertical(id="trace-pane", classes="pane"):
+                    yield Label("PATH REACHABILITY GRAPH TRACE", classes="panel-title")
+                    yield Static("Select a fact to inspect path reachability...", id="trace-content")
+                    
+        yield Static("PROVENANCE: No memory selected", id="provenance-footer")
         yield Footer()
 
     def on_mount(self) -> None:
+        load_env()
         # Verify and initialize Neo4j connection
         try:
             self.graph = HydraGraph()
-            self.query_db_status()
-        except Exception as e:
-            self.query_one("#db-status").update("✗ Disconnected (Neo4j not running)")
-            self.graph = None
-
-    def query_db_status(self):
-        if self.graph:
             self.query_one("#db-status").update("✓ Connected to Neo4j")
-        else:
-            self.query_one("#db-status").update("✗ Disconnected (Neo4j not running)")
+            self.run_traversal()
+        except Exception as e:
+            self.query_one("#db-status").update("✗ Disconnected (Set NEO4J_PASSWORD!)")
+            self.graph = None
+            self.query_one("#trace-content").update(
+                "[red][bold]DATABASE CONNECTION ERROR[/bold][/red]\n\n"
+                "Please configure [yellow]NEO4J_PASSWORD[/yellow] in a `.env` file or export it in your shell environment.\n\n"
+                f"Error: {e}"
+            )
 
-    def get_selected_actor_id(self) -> str:
+    def get_selected_actor_name(self) -> str:
         selector = self.query_one("#agent-selector")
         if selector.pressed_button.id == "rb-support":
-            return "actor:agent_support"
+            return "Support"
         elif selector.pressed_button.id == "rb-sales":
-            return "actor:agent_sales"
+            return "Sales"
         elif selector.pressed_button.id == "rb-finance":
+            return "Finance"
+        return "Support"
+
+    def get_selected_actor_id(self) -> str:
+        name = self.get_selected_actor_name()
+        if name == "Support":
+            return "actor:agent_support"
+        elif name == "Sales":
+            return "actor:agent_sales"
+        elif name == "Finance":
             return "actor:agent_finance"
         return "actor:agent_support"
 
@@ -177,7 +252,6 @@ class HydraRbacTui(App):
 
     def run_traversal(self):
         if not self.graph:
-            self.query_one("#trace-content").update("[red]Error: Database connection is not available.[/red]")
             return
 
         actor_id = self.get_selected_actor_id()
@@ -192,34 +266,55 @@ class HydraRbacTui(App):
             # Query all facts matching topic to find blocked ones
             all_facts = self.graph.get_all_topic_facts(topic)
 
-            # Build list items
             list_view = self.query_one("#results-list")
             list_view.clear()
 
-            # Render results
+            allowed_items = []
+            blocked_items = []
+
             for fact in all_facts:
                 fact_id = fact["id"]
                 content = fact["content"]
-                
                 is_allowed = fact_id in allowed_ids
                 
                 # Retrieve the scope name if allowed, otherwise find it
                 scope_name = "Restricted"
                 if is_allowed:
-                    # Find matching item in allowed_facts to get its scope name
                     matching = next((f for f in allowed_facts if f["id"] == fact_id), None)
                     if matching:
                         scope_name = matching["scope_name"]
                 else:
-                    # Try to fetch scope name manually
+                    # Try to fetch scope name manually from trace
                     trace = self.graph.get_trace(actor_id, fact_id, as_of)
                     target_trace = next((t for t in trace if t["id"] == fact_id), None)
                     if target_trace and target_trace["scopes"]:
                         scope_name = ", ".join([s["scope_name"] for s in target_trace["scopes"]])
+                    else:
+                        scope_name = "Derived (Implicit)"
 
-                list_view.append(FactListItem(fact_id, content, is_allowed, scope_name))
+                item = FactListItem(fact_id, content, is_allowed, scope_name)
+                if is_allowed:
+                    allowed_items.append(item)
+                else:
+                    blocked_items.append(item)
 
-            self.query_one("#trace-content").update("Click a result above to inspect graph permission path.")
+            # Build list with grouping headers
+            list_view.append(HeaderListItem("AVAILABLE (AUTHORIZED)"))
+            if allowed_items:
+                for item in allowed_items:
+                    list_view.append(item)
+            else:
+                list_view.append(ListItem(Static("  (No memories authorized for retrieval)")))
+
+            list_view.append(HeaderListItem("BLOCKED (UNAUTHORIZED)"))
+            if blocked_items:
+                for item in blocked_items:
+                    list_view.append(item)
+            else:
+                list_view.append(ListItem(Static("  (No blocked memories matching topic)")))
+
+            self.query_one("#trace-content").update("Select a fact above to inspect graph permission path.")
+            self.query_one("#provenance-footer").update("PROVENANCE: No memory selected")
         except Exception as e:
             tb = traceback.format_exc()
             self.query_one("#trace-content").update(f"[red]Error querying database:\n{e}\n\n{tb}[/red]")
@@ -234,59 +329,95 @@ class HydraRbacTui(App):
             return
 
         actor_id = self.get_selected_actor_id()
+        actor_name = self.get_selected_actor_name()
         as_of = self.query_one("#time-input").value.strip()
 
         try:
             trace_items = self.graph.get_trace(actor_id, fact_id, as_of)
-            formatted_text = self.format_trace_tree(trace_items, fact_id)
+            formatted_text = self.format_graph_path(trace_items, actor_name, fact_id)
             self.query_one("#trace-content").update(formatted_text)
+            
+            # Update the provenance status bar/footer
+            target = next((item for item in trace_items if item["id"] == fact_id), None)
+            sources = [item for item in trace_items if item["id"] != fact_id]
+            if sources:
+                source_ids = " + ".join([s["id"] for s in sources])
+                self.query_one("#provenance-footer").update(f"PROVENANCE: {fact_id} ← {source_ids}")
+            else:
+                self.query_one("#provenance-footer").update(f"PROVENANCE: {fact_id} (Base Fact)")
         except Exception as e:
             self.query_one("#trace-content").update(f"[red]Error fetching trace:\n{e}[/red]")
 
-    def format_trace_tree(self, trace_items, target_fact_id):
-        # Find the target fact first
+    def format_graph_path(self, trace_items, actor_name, target_fact_id):
         target = next((item for item in trace_items if item["id"] == target_fact_id), None)
         if not target:
             return f"No trace details found for fact: {target_fact_id}"
 
         lines = []
-        lines.append(f"[bold]Fact ID:[/bold] [yellow]{target['id']}[/yellow]")
-        lines.append(f"[bold]Content:[/bold] {target['content']}")
+        lines.append(f"[bold]FACT ID:[/bold] [yellow]{target['id']}[/yellow]")
+        lines.append(f"[bold]CONTENT:[/bold] \"{target['content']}\"")
         
-        status_icon = "[bold][green]✓ ALLOWED[/green][/bold]" if target["is_accessible"] else "[bold][red]🔒 BLOCKED[/red][/bold]"
-        lines.append(f"[bold]Status Check:[/bold] {status_icon}")
+        status_icon = "[green][bold]ALLOWED ✓[/bold][/green]" if target["is_accessible"] else "[red][bold]BLOCKED 🔒[/bold][/red]"
+        lines.append(f"[bold]STATUS:[/bold] {status_icon}\n")
         
-        # Scopes of the target fact itself
-        if target["scopes"]:
-            lines.append("\n[underline]Target Scope Visibility Check:[/underline]")
-            for sc in target["scopes"]:
-                act_m = "[green]✓ Active[/green]" if sc["is_membership_active"] else "[red]✗ Inactive/None[/red]"
-                act_v = "[green]✓ Active[/green]" if sc["is_visibility_active"] else "[red]✗ Inactive/None[/red]"
-                lines.append(f"  - [cyan]{sc['scope_name']}[/cyan] Scope:")
-                lines.append(f"    * Fact visibility: {act_v} (since: {sc['visible_since']} until: {sc['visible_until'] or 'infinity'})")
-                lines.append(f"    * Agent membership: {act_m} (since: {sc['membership_since'] or 'N/A'} until: {sc['membership_until'] or 'infinity'})")
+        # helper to format a single fact traversal
+        def get_traversal_string(item, indent_str=""):
+            trav = []
+            if not item["scopes"]:
+                trav.append(f"{indent_str}Agent ({actor_name})")
+                trav.append(f"{indent_str}  X [red]NO DIRECT SCOPE ASSIGNED[/red]")
+                trav.append(f"{indent_str}  ▼ (Blocked)")
+                trav.append(f"{indent_str}Fact ({item['id']})")
+                return trav
                 
-        # List sources/provenance
+            for sc in item["scopes"]:
+                trav.append(f"{indent_str}Agent ({actor_name})")
+                if sc["is_membership_active"]:
+                    trav.append(f"{indent_str}  │")
+                    trav.append(f"{indent_str}  │ MEMBER_OF")
+                    trav.append(f"{indent_str}  ▼")
+                    trav.append(f"{indent_str}Scope ({sc['scope_name']})")
+                else:
+                    trav.append(f"{indent_str}  │")
+                    trav.append(f"{indent_str}  ▼")
+                    trav.append(f"{indent_str}Scope ({sc['scope_name']}) [red][bold]🔒 X (NO VALID PATH)[/bold][/red]")
+                    
+                if sc["is_visibility_active"]:
+                    trav.append(f"{indent_str}  ▲")
+                    trav.append(f"{indent_str}  │ VISIBLE_TO")
+                    trav.append(f"{indent_str}  │")
+                else:
+                    trav.append(f"{indent_str}  X [red][bold]🔒 (EXPIRED VISIBILITY)[/bold][/red]")
+                    trav.append(f"{indent_str}  │")
+                    
+                trav.append(f"{indent_str}Fact ({item['id']})")
+            return trav
+
+        # Check if derived
         sources = [item for item in trace_items if item["id"] != target_fact_id]
-        if sources:
-            lines.append("\n[bold][underline]Derivation Provenance Trace:[/underline][/bold]")
-            lines.append("This is a [yellow]derived fact[/yellow]. Access requires authorization for ALL source facts:")
+        
+        if not sources:
+            lines.append("[underline][bold]GRAPH TRAVERSAL PATH:[/bold][/underline]")
+            lines.extend(get_traversal_string(target))
+        else:
+            lines.append("[underline][bold]PROVENANCE DERIVATION GRAPH PATHS:[/bold][/underline]")
+            lines.append("This is a [yellow]derived fact[/yellow]. Access requires active paths to all source facts:\n")
             for i, src in enumerate(sources):
                 prefix = "├── " if i < len(sources) - 1 else "└── "
                 src_status = "[green]✓ ALLOWED[/green]" if src["is_accessible"] else "[red]🔒 BLOCKED[/red]"
-                lines.append(f"{prefix}{src_status} [bold]{src['id']}[/bold]")
+                lines.append(f"{prefix}{src_status} Source Fact: [cyan]{src['id']}[/cyan]")
                 
-                # Details of this source
-                indent = "│   " if i < len(sources) - 1 else "    "
-                lines.append(f"{indent}Content: [italic]\"{src['content']}\"[/italic]")
+                indent = "│     " if i < len(sources) - 1 else "      "
+                trav_str = get_traversal_string(src, indent)
+                for t_line in trav_str:
+                    lines.append(t_line)
+                lines.append("") # Spacer
                 
-                if src["scopes"]:
-                    for sc in src["scopes"]:
-                        act_m = "[green]Active[/green]" if sc["is_membership_active"] else "[red]Inactive/None[/red]"
-                        lines.append(f"{indent}Required Scope: [cyan]{sc['scope_name']}[/cyan] (Agent Membership: {act_m})")
-                else:
-                    lines.append(f"{indent}Required Scope: None (Inherited/Public)")
-                    
+            # If target fact itself has scope constraints (in this seeded case, none)
+            if target["scopes"]:
+                lines.append("Additional Direct Scope Constraint:")
+                lines.extend(get_traversal_string(target, "  "))
+                
         return "\n".join(lines)
 
 if __name__ == "__main__":

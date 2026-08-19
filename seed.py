@@ -1,5 +1,6 @@
 import sys
-from graph import HydraGraph
+import os
+from graph import HydraGraph, load_env
 
 # Force stdout to use UTF-8 on Windows to support Unicode characters
 if hasattr(sys.stdout, "reconfigure"):
@@ -13,6 +14,11 @@ DATE_SALES_FINANCE_START = "2026-08-12T00:00:00Z"
 DATE_SALES_FINANCE_END = "2026-08-14T23:59:59Z"
 
 def seed():
+    load_env()
+    if not os.environ.get("NEO4J_PASSWORD"):
+        print("Error: NEO4J_PASSWORD environment variable not set. Cannot run seed script.")
+        sys.exit(1)
+
     graph = HydraGraph()
     try:
         print("\nClearing old data...")
@@ -94,12 +100,12 @@ def seed():
         
         graph.create_fact(inference_id, inference_content, DATE_START)
 
-        # Provenance links
+        # Provenance links (derived from one Finance fact and one Sales fact)
         graph.add_provenance(inference_id, "fact:acme_churn")  # Derived from Finance fact
         graph.add_provenance(inference_id, "fact:acme_deal")   # Derived from Sales fact
 
-        # Place the inference fact in Finance scope as direct visibility restriction
-        graph.make_fact_visible_to(inference_id, "scope:team_finance", DATE_START)
+        # Note: We deliberately DO NOT assign any direct VISIBLE_TO scope to fact:acme_inference.
+        # Its visibility is computed strictly based on its provenance sources.
 
         print("\n✓ Seed completed successfully")
 
