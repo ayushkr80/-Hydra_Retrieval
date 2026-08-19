@@ -36,6 +36,35 @@ If there is no valid path (due to missing membership, expired access, or scope m
 
 ---
 
+## Security Decision Example
+
+### Scenario 1: Standard Query
+- **Query Time**: `2026-08-19`
+- **Agent**: `Sales`
+- **Topic**: `Acme`
+
+**Results**:
+- `✓ Acme Corp is on Enterprise plan` (Scope: Company-Wide)
+- `✓ Acme primary contact is Jane Doe` (Scope: Company-Wide)
+- `✓ Acme upsell deal is in Q3 pipeline` (Scope: Team-Sales)
+- `🔒 Acme ARR` (Scope: Team-Finance | Reason: NO ACTIVE PATH)
+- `🔒 Acme Churn Risk` (Scope: Team-Finance | Reason: NO ACTIVE PATH)
+
+---
+
+### Scenario 2: Derived Fact Transitive Check
+- **Query Fact**: `fact:acme_inference`
+- **Derivation Path**:
+  ```
+  fact:acme_inference
+  ├── Churn Risk ──► Finance Scope (🔒 BLOCKED)
+  └── Upsell Deal ──► Sales Scope (✓ ALLOWED)
+  ```
+- **Result**: **`🔒 BLOCKED`**
+- **Reason**: Agent lacks access to 1 source fact (Finance). The authorization traversal checks access to *all* derivation nodes, blocking the inference node even though the agent has access to the upsell source fact.
+
+---
+
 ## Core Schema & Traversal
 
 ```
@@ -79,7 +108,7 @@ This project enforces safe credentials handling. It does not use hardcoded passw
 ```env
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=YOUR_ACTUAL_NEO4J_PASSWORD
+NEO4J_PASSWORD=<your-local-password>
 ```
 
 *(The application will automatically load variables from `.env` or `../.env` at startup).*

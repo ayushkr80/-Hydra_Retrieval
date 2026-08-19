@@ -144,57 +144,33 @@ class HydraGraph:
     def get_facts_for_actor(self, actor_id: str, topic: str, as_of: str):
         """
         Retrieves all facts for a topic that the actor is authorized to see at the specified time 'as_of'.
-        A fact f is authorized if for every source fact src in its DERIVED_FROM path (including f itself):
-          - Either src has no visibility constraints (no VISIBLE_TO edges).
-          - Or the actor has an active membership in at least one Scope to which src is visible at 'as_of'.
+        To avoid logic drift, this utilizes get_trace to evaluate the dynamic reachability rules
+        for each matching fact node.
         """
-        query = """
-        MATCH (actor:Actor {id: $actor_id})
-        MATCH (f:Fact)
-        WHERE f.topic = $topic OR f.content CONTAINS $topic
+        all_facts = self.get_all_topic_facts(topic)
+        authorized_facts = []
         
-        // Find all source facts in the derivation graph (including f itself)
-        MATCH (f)-[:DERIVED_FROM*0..]->(src:Fact)
-        
-        // Check if src has any visibility restriction
-        OPTIONAL MATCH (src)-[any_v:VISIBLE_TO]->()
-        WITH actor, f, src, count(any_v) > 0 AS has_restriction
-        
-        // Check if the actor has active access to src at time as_of
-        OPTIONAL MATCH (actor)-[m:MEMBER_OF]->(scope:Scope)<-[v:VISIBLE_TO]-(src)
-        WHERE
-            m.since <= $as_of AND (m.until IS NULL OR m.until > $as_of)
-            AND v.since <= $as_of AND (v.until IS NULL OR v.until > $as_of)
-            
-        WITH actor, f, src, (NOT has_restriction OR count(scope) > 0) AS src_accessible
-        
-        // Aggregate accessibility across all sources in the derivation path
-        WITH actor, f, all(x IN collect(src_accessible) WHERE x = true) AS is_authorized
-        WHERE is_authorized
-        
-        // Find the scopes through which the actor gets access to the fact f itself (if any)
-        OPTIONAL MATCH (f)-[v:VISIBLE_TO]->(s:Scope)<-[m:MEMBER_OF]-(actor)
-        WHERE
-            m.since <= $as_of AND (m.until IS NULL OR m.until > $as_of)
-            AND v.since <= $as_of AND (v.until IS NULL OR v.until > $as_of)
-            
-        RETURN
-            f.id AS id,
-            f.content AS content,
-            f.topic AS topic,
-            collect(s.name) AS scope_names
-        """
-        with self.driver.session() as session:
-            result = session.run(query, actor_id=actor_id, topic=topic, as_of=as_of)
-            return [
-                {
-                    "id": record["id"],
-                    "content": record["content"],
-                    "topic": record["topic"],
-                    "scope_name": record["scope_names"][0] if record["scope_names"] else "Derived (Implicit)"
-                }
-                for record in result
-            ]
+        for fact in all_facts:
+            trace = self.get_trace(actor_id, fact["id"], as_of)
+            # A fact is authorized if and only if all of its sources (including itself) are accessible
+            if trace and all(src["is_accessible"] for src in trace):
+                target = next((item for item in trace if item["id"] == fact["id"]), None)
+                scope_name = "Restricted"
+                if target and target["scopes"]:
+                    active_scopes = [
+                        s["scope_name"]
+                        for s in target["scopes"]
+                        if s["is_membership_active"] and s["is_visibility_active"]
+                    ]
+                    if active_scopes:
+                        scope_name = active_scopes[0]
+                authorized_facts.append({
+                    "id": fact["id"],
+                    "content": fact["content"],
+                    "topic": fact["topic"],
+                    "scope_name": scope_name
+                })
+        return authorized_facts
 
     def get_all_topic_facts(self, topic: str):
         """
@@ -214,6 +190,8 @@ class HydraGraph:
         """
         Traces the authorization/provenance tree for a single fact.
         Returns a list of source facts, their scopes, and the actor's authorization status for each.
+        To avoid public-by-default behavior, every fact must have at least one valid scope
+        (i.e. if a fact has no visible_to relationships, it is automatically blocked).
         """
         query = """
         MATCH (actor:Actor {id: $actor_id})
@@ -253,23 +231,22 @@ class HydraGraph:
                 src_content = record["content"]
                 scopes_info = record["scopes"]
                 
-                # Check if this source node is accessible
-                # It's accessible if it has no visibility restrictions OR has at least one active authorized scope
-                has_scopes = any(s["scope_id"] is not None for s in scopes_info)
-                
-                is_accessible = True
-                if has_scopes:
-                    is_accessible = False
-                    for s in scopes_info:
+                # Check accessibility:
+                # Every fact must have at least one explicit VISIBLE_TO scope,
+                # AND the actor must have an active membership in that scope.
+                is_accessible = False
+                valid_scopes = []
+                for s in scopes_info:
+                    if s["scope_id"] is not None:
+                        valid_scopes.append(s)
                         if s["is_membership_active"] and s["is_visibility_active"]:
                             is_accessible = True
-                            break
                 
                 trace_items.append({
                     "id": src_id,
                     "content": src_content,
                     "is_accessible": is_accessible,
-                    "scopes": [s for s in scopes_info if s["scope_id"] is not None]
+                    "scopes": valid_scopes
                 })
             
             return trace_items

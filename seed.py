@@ -104,8 +104,10 @@ def seed():
         graph.add_provenance(inference_id, "fact:acme_churn")  # Derived from Finance fact
         graph.add_provenance(inference_id, "fact:acme_deal")   # Derived from Sales fact
 
-        # Note: We deliberately DO NOT assign any direct VISIBLE_TO scope to fact:acme_inference.
-        # Its visibility is computed strictly based on its provenance sources.
+        # To prevent the "public because no ACL exists" security issue,
+        # we assign fact:acme_inference to the company_wide scope.
+        # Its provenance sources will still restrict it to Sales + Finance agents.
+        graph.make_fact_visible_to(inference_id, "scope:company_wide", DATE_START)
 
         print("\n✓ Seed completed successfully")
 

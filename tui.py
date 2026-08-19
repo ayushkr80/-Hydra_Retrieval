@@ -23,17 +23,34 @@ class HeaderListItem(ListItem):
         yield Label(f"─── {self.text} ───", classes="header-label")
 
 class FactListItem(ListItem):
-    def __init__(self, fact_id: str, content: str, is_allowed: bool, scope_name: str):
+    def __init__(self, fact_id: str, content: str, is_allowed: bool, scope_name: str, actor_name: str, is_derived: bool):
         super().__init__()
         self.fact_id = fact_id
         self.content = content
         self.is_allowed = is_allowed
         self.scope_name = scope_name
+        self.actor_name = actor_name
+        self.is_derived = is_derived
 
     def compose(self) -> ComposeResult:
         icon = "✓" if self.is_allowed else "🔒"
         style_class = "allowed-fact" if self.is_allowed else "blocked-fact"
-        yield Label(f"{icon} {self.content} ({self.scope_name})", classes=style_class)
+        
+        # Build multi-line rich text explanation (Priority 3)
+        title = f"{icon} {self.content}"
+        
+        if self.is_allowed:
+            if self.is_derived:
+                subtitle = f"  Type: Derived  |  Path: Fully Authorized Provenance"
+            else:
+                subtitle = f"  Scope: {self.scope_name}  |  Path: {self.actor_name} → {self.scope_name} → Fact"
+        else:
+            if self.is_derived:
+                subtitle = f"  Required Scopes: {self.scope_name}  |  Reason: Lacks access to at least one provenance source"
+            else:
+                subtitle = f"  Required Scope: {self.scope_name}  |  Reason: NO ACTIVE PATH"
+                
+        yield Label(f"{title}\n[dim]{subtitle}[/dim]", classes=style_class)
 
 class HydraRbacTui(App):
     CSS = """
@@ -137,11 +154,13 @@ class HydraRbacTui(App):
     .allowed-fact {
         color: #52b788;
         text-style: bold;
+        padding: 1;
     }
     
     .blocked-fact {
         color: #e63946;
         text-style: bold;
+        padding: 1;
     }
     
     #trace-content {
@@ -255,6 +274,7 @@ class HydraRbacTui(App):
             return
 
         actor_id = self.get_selected_actor_id()
+        actor_name = self.get_selected_actor_name()
         topic = self.query_one("#topic-input").value.strip()
         as_of = self.query_one("#time-input").value.strip()
 
@@ -277,22 +297,16 @@ class HydraRbacTui(App):
                 content = fact["content"]
                 is_allowed = fact_id in allowed_ids
                 
-                # Retrieve the scope name if allowed, otherwise find it
-                scope_name = "Restricted"
-                if is_allowed:
-                    matching = next((f for f in allowed_facts if f["id"] == fact_id), None)
-                    if matching:
-                        scope_name = matching["scope_name"]
-                else:
-                    # Try to fetch scope name manually from trace
-                    trace = self.graph.get_trace(actor_id, fact_id, as_of)
-                    target_trace = next((t for t in trace if t["id"] == fact_id), None)
-                    if target_trace and target_trace["scopes"]:
-                        scope_name = ", ".join([s["scope_name"] for s in target_trace["scopes"]])
-                    else:
-                        scope_name = "Derived (Implicit)"
+                # Fetch trace to check derivation and scopes
+                trace = self.graph.get_trace(actor_id, fact_id, as_of)
+                is_derived = len(trace) > 1
+                
+                scope_name = "None"
+                target_trace = next((t for t in trace if t["id"] == fact_id), None)
+                if target_trace and target_trace["scopes"]:
+                    scope_name = ", ".join([s["scope_name"] for s in target_trace["scopes"]])
 
-                item = FactListItem(fact_id, content, is_allowed, scope_name)
+                item = FactListItem(fact_id, content, is_allowed, scope_name, actor_name, is_derived)
                 if is_allowed:
                     allowed_items.append(item)
                 else:
@@ -338,13 +352,12 @@ class HydraRbacTui(App):
             self.query_one("#trace-content").update(formatted_text)
             
             # Update the provenance status bar/footer
-            target = next((item for item in trace_items if item["id"] == fact_id), None)
             sources = [item for item in trace_items if item["id"] != fact_id]
             if sources:
-                source_ids = " + ".join([s["id"] for s in sources])
-                self.query_one("#provenance-footer").update(f"PROVENANCE: {fact_id} ← {source_ids}")
+                source_ids = " + ".join([s["id"].split(":")[-1] for s in sources])
+                self.query_one("#provenance-footer").update(f"PROVENANCE: {fact_id.split(':')[-1]} ← {source_ids}")
             else:
-                self.query_one("#provenance-footer").update(f"PROVENANCE: {fact_id} (Base Fact)")
+                self.query_one("#provenance-footer").update(f"PROVENANCE: {fact_id.split(':')[-1]} (Base Fact)")
         except Exception as e:
             self.query_one("#trace-content").update(f"[red]Error fetching trace:\n{e}[/red]")
 
@@ -354,69 +367,66 @@ class HydraRbacTui(App):
             return f"No trace details found for fact: {target_fact_id}"
 
         lines = []
-        lines.append(f"[bold]FACT ID:[/bold] [yellow]{target['id']}[/yellow]")
-        lines.append(f"[bold]CONTENT:[/bold] \"{target['content']}\"")
+        is_allowed = all(src["is_accessible"] for src in trace_items)
+        status_icon = "[green][bold]✓ ALLOWED[/bold][/green]" if is_allowed else "[red][bold]🔒 BLOCKED[/bold][/red]"
         
-        status_icon = "[green][bold]ALLOWED ✓[/bold][/green]" if target["is_accessible"] else "[red][bold]BLOCKED 🔒[/bold][/red]"
-        lines.append(f"[bold]STATUS:[/bold] {status_icon}\n")
-        
-        # helper to format a single fact traversal
-        def get_traversal_string(item, indent_str=""):
-            trav = []
-            if not item["scopes"]:
-                trav.append(f"{indent_str}Agent ({actor_name})")
-                trav.append(f"{indent_str}  X [red]NO DIRECT SCOPE ASSIGNED[/red]")
-                trav.append(f"{indent_str}  ▼ (Blocked)")
-                trav.append(f"{indent_str}Fact ({item['id']})")
-                return trav
-                
-            for sc in item["scopes"]:
-                trav.append(f"{indent_str}Agent ({actor_name})")
-                if sc["is_membership_active"]:
-                    trav.append(f"{indent_str}  │")
-                    trav.append(f"{indent_str}  │ MEMBER_OF")
-                    trav.append(f"{indent_str}  ▼")
-                    trav.append(f"{indent_str}Scope ({sc['scope_name']})")
-                else:
-                    trav.append(f"{indent_str}  │")
-                    trav.append(f"{indent_str}  ▼")
-                    trav.append(f"{indent_str}Scope ({sc['scope_name']}) [red][bold]🔒 X (NO VALID PATH)[/bold][/red]")
-                    
-                if sc["is_visibility_active"]:
-                    trav.append(f"{indent_str}  ▲")
-                    trav.append(f"{indent_str}  │ VISIBLE_TO")
-                    trav.append(f"{indent_str}  │")
-                else:
-                    trav.append(f"{indent_str}  X [red][bold]🔒 (EXPIRED VISIBILITY)[/bold][/red]")
-                    trav.append(f"{indent_str}  │")
-                    
-                trav.append(f"{indent_str}Fact ({item['id']})")
-            return trav
-
         # Check if derived
         sources = [item for item in trace_items if item["id"] != target_fact_id]
         
         if not sources:
-            lines.append("[underline][bold]GRAPH TRAVERSAL PATH:[/bold][/underline]")
-            lines.extend(get_traversal_string(target))
+            # Base fact traversal path
+            lines.append(f"{status_icon} [bold]{target['content']}[/bold]\n")
+            lines.append("[underline][bold]GRAPH PATH[/bold][/underline]")
+            if target["scopes"]:
+                for sc in target["scopes"]:
+                    lines.append(f"Agent ({actor_name})")
+                    if sc["is_membership_active"]:
+                        lines.append("  │")
+                        lines.append("  │ MEMBER_OF")
+                        lines.append("  ▼")
+                        lines.append(f"Scope ({sc['scope_name']})")
+                    else:
+                        lines.append("  │")
+                        lines.append("  ▼")
+                        lines.append(f"Scope ({sc['scope_name']}) [red][bold]🔒 X (NO VALID PATH)[/bold][/red]")
+                        
+                    if sc["is_visibility_active"]:
+                        lines.append("  ▲")
+                        lines.append("  │ VISIBLE_TO")
+                        lines.append("  │")
+                    else:
+                        lines.append("  X [red]🔒 (INACTIVE VISIBILITY)[/red]")
+                        lines.append("  │")
+                    lines.append(f"Fact ({target['id']})")
+            else:
+                lines.append("  [red]🔒 Fact has no explicit scope visibility (BLOCKED)[/red]")
+            
+            lines.append(f"\n[bold]FINAL DECISION[/bold]\n{status_icon}")
         else:
-            lines.append("[underline][bold]PROVENANCE DERIVATION GRAPH PATHS:[/bold][/underline]")
-            lines.append("This is a [yellow]derived fact[/yellow]. Access requires active paths to all source facts:\n")
+            # Derived fact (Priority 4 visual trace)
+            lines.append(f"{status_icon} [bold]{target['content']}[/bold]\n")
+            lines.append("[underline][bold]PROVENANCE[/bold][/underline]")
+            
+            blocked_count = 0
             for i, src in enumerate(sources):
                 prefix = "├── " if i < len(sources) - 1 else "└── "
-                src_status = "[green]✓ ALLOWED[/green]" if src["is_accessible"] else "[red]🔒 BLOCKED[/red]"
-                lines.append(f"{prefix}{src_status} Source Fact: [cyan]{src['id']}[/cyan]")
+                src_icon = "[green]✓[/green]" if src["is_accessible"] else "[red]✗[/red]"
                 
-                indent = "│     " if i < len(sources) - 1 else "      "
-                trav_str = get_traversal_string(src, indent)
-                for t_line in trav_str:
-                    lines.append(t_line)
-                lines.append("") # Spacer
-                
-            # If target fact itself has scope constraints (in this seeded case, none)
-            if target["scopes"]:
-                lines.append("Additional Direct Scope Constraint:")
-                lines.extend(get_traversal_string(target, "  "))
+                scope_desc = ""
+                if src["scopes"]:
+                    scope_desc = f" [{src['scopes'][0]['scope_name']}]"
+                    
+                lines.append(f"{prefix}{src_icon} {src['content']}{scope_desc}")
+                if not src["is_accessible"]:
+                    blocked_count += 1
+                    
+            lines.append("\n[underline][bold]FINAL DECISION[/bold][/underline]")
+            lines.append(status_icon)
+            
+            if is_allowed:
+                lines.append("\n[bold]Reason:[/bold] Agent has access to all source facts.")
+            else:
+                lines.append(f"\n[bold]Reason:[/bold]\nAgent lacks access to {blocked_count} source fact{'s' if blocked_count > 1 else ''}.")
                 
         return "\n".join(lines)
 
